@@ -1,0 +1,132 @@
+--========================================================
+-- monitor_akun_v3.lua (aman untuk autoexec) - Kirim snapshot akun Fish It ke bot Discord (kalva)
+-- Jalankan di tiap akun. Data dikirim lewat webhook ke channel monitoring.
+--
+-- Perbaikan: klasifikasi item disamakan PERSIS dengan trade_controller.lua
+--   * Secret = ikan Tier 7, Ruby dikecualikan.
+--   * Forgotten = ikan Tier 8 (BARU, belum ada di versi sebelumnya).
+--   * Evolved = item NON-ikan bernama mengandung 'evolved'
+--               (ikan bernama 'evolved' TIDAK ikut terhitung).
+--   * Runic = HANYA 'Runic Enchant Stone' persis
+--             (ikan bernama 'runic' TIDAK ikut terhitung).
+--   * Ruby = Id 243 saja, sama seperti trade_controller.lua.
+--
+--========================================================
+
+-- Cegah jalan dobel (autoexec & dijalankan manual)
+local env = (getgenv)() or _G
+if env.__MONITOR_AKUN_JALAN then return end
+env.__MONITOR_AKUN_JALAN = true
+
+if not game:IsLoaded() then game.Loaded:Wait() end
+
+local ENDPOINT = "https://discord.com/api/webhooks/1560572885381419111/zF4KxzhfhcVjEDYOZgwqS9kiWii2hFdPLeGs5e24IC_vT4o5e-y44YGU-6Wq52LhcRUU"
+local INTERVAL = 60               -- detik; jangan di bawah 30 kalau akunnya banyak
+
+local Players = game:GetService("Players")
+repeat task.wait() until Players.LocalPlayer
+
+local RS = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
+
+-- Tunggu paket game siap (autoexec jalan sangat awal). Kalau bukan Fish It, berhenti.
+local pk = RS:WaitForChild("Packages", 30)
+local repl = pk and pk:WaitForChild("Replion", 30)
+local sharedF = RS:WaitForChild("Shared", 30)
+local iuMod = sharedF and sharedF:WaitForChild("ItemUtility", 30)
+
+if not (repl and iuMod) then
+    print("[MONITOR] paket game tidak ditemukan (bukan Fish It?), berhenti")
+    env.__MONITOR_AKUN_JALAN = false
+    return
+end
+
+local Data = require(repl).Client:WaitReplion("Data")
+local IU = require(iuMod)
+local req = (syn and syn.request) or (http and http.request) or http_request or request
+
+local function info(id)
+    local ok, r = pcall(IU.GetItemDataFromItemType, "Items", id)
+    return ok and r and r.Data or nil
+end
+
+local function snapshot()
+    local s = {
+        akun = Players.LocalPlayer.Name,
+        fish = 0,
+        coins = 0,
+        evo = 0,
+        runic = 0,
+        secret = 0,
+        forgotten = 0,
+        ruby = 0,
+        rod = "None"
+    }
+
+    pcall(function()
+        s.coins = Data:Get("Coins") or 0
+    end)
+
+    local ok, inv = pcall(function()
+        return Data:GetExpect({"Inventory", "Items"})
+    end)
+
+    if ok and type(inv) == "table" then
+        for _, it in pairs(inv) do
+            local d = info(it.Id)
+
+            if d then
+                local q = it.Quantity or 1
+                local name = tostring(d.Name):lower()
+
+                -- Ruby (ID 243) dicek lebih dulu, sama seperti trade_controller.lua,
+                -- supaya Ruby TIDAK ikut dobel terhitung sebagai Secret/Forgotten.
+                local isRuby = tonumber(it.Id) == 243
+
+                if d.Type == "Fish" then
+                    s.fish += q
+
+                    if not isRuby and d.Tier == 7 then
+                        s.secret += q
+                    end
+
+                    if not isRuby and d.Tier == 8 then
+                        s.forgotten += q
+                    end
+                end
+
+                -- Evolved: HANYA item non-ikan (ikan bernama 'evolved' tidak ikut).
+                if not isRuby and d.Type ~= "Fish" and name:find("evolved", 1, true) then
+                    s.evo += q
+                end
+
+                -- Runic: HANYA Runic Enchant Stone persis (ikan bernama 'runic' tidak ikut).
+                if not isRuby and d.Type == "Enchant Stones" and name == "runic enchant stone" then
+                    s.runic += q
+                end
+
+                if isRuby then
+                    s.ruby += q
+                end
+            end
+        end
+    end
+
+    pcall(function()
+        local eq = Data:Get("EquippedItems")
+        local rods = Data:GetExpect({"Inventory", "Fishing Rods"})
+
+        for _, u in pairs(eq) do
+            for _, r in pairs(rods) do
+                if r.UUID == u then
+                    local d = IU:GetItemData(r.Id)
+                    s.rod = d and d.Data.Name or s.rod
+
+                    if r.Metadata and r.Metadata.EnchantId then
+                        local e = IU:GetEnchantData(r.Metadata.EnchantId)
+                        s.enchant1 = e and e.Data.Name
+                    end
+                end
+            end
+        end
+    end)
